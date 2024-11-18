@@ -1,0 +1,670 @@
+[tasks.format-rust]
+args = ["fmt"]
+command = "cargo"
+dependencies = ["install-rustfmt"]
+description = "Format rust sources files."
+
+[tasks.lint-rust-format]
+args = ["fmt", "--all", "--", "--check"]
+command = "cargo"
+dependencies = ["install-rustfmt"]
+description = "Check format of sources files."
+
+[tasks.lint-rust]
+args = ["cranky"]
+command = "cargo"
+dependencies = ["install-clippy"]
+description = "Check lint of all sources files."
+
+[tasks.lint-toml]
+args = ["lint"]
+command = "taplo"
+dependencies = ["install-taplo-cli"]
+description = "Check lint of all toml files."
+
+[tasks.lint-cargo-toml]
+script = '''
+find . -type f \( -name "Cargo.toml" \) -print0 | xargs -0 -n1 cargo make lint-cargo-toml-file
+'''
+
+[tasks.lint-cargo-toml-file]
+args = ["${@}"]
+command = "cargo-toml-lint"
+dependencies = ["install-cargo-toml-lint"]
+description = "Check lint of the given toml file"
+
+[tasks.format-toml]
+args = ["fmt"]
+command = "taplo"
+dependencies = ["install-taplo-cli"]
+description = "Format toml file"
+
+[tasks.lint]
+dependencies = ["lint-rust-format", "lint-rust", "lint-toml"]
+
+[tasks.format]
+dependencies = ["format-rust", "format-toml"]
+
+[tasks.clean]
+args = ["clean"]
+command = "cargo"
+
+[tasks.build]
+args = ["build", "--release", "--locked"]
+command = "cargo"
+
+[tasks.test]
+args = ["test", "--lib", "--tests", "--workspace", "--locked"]
+command = "cargo"
+description = "Run all unit tests."
+env = { RUSTFLAGS = "-D warnings" }
+
+[tasks.test-coverage]
+args = ["llvm-cov", "--workspace", "--lcov", "--output-path", "lcov.info"]
+command = "cargo"
+dependencies = ["install-llvm-tools-preview", "install-llvm-cov"]
+
+[tasks.install-wasm]
+script = '''
+rustup target add wasm32-unknown-unknown
+'''
+
+[tasks.wasm]
+args = [
+  "hack",
+  "build",
+  "--release",
+  "--lib",
+  "--target",
+  "wasm32-unknown-unknown",
+  "--locked",
+]
+command = "cargo"
+dependencies = ["install-wasm", "install-cargo-hack"]
+env = { RUSTFLAGS = "-C link-arg=-s" }
+
+[tasks.schema]
+workspace = true
+
+[tasks.check-contracts]
+dependencies = ["install-cosmwasm-check", "wasm"]
+script = '''
+cosmwasm-check ./target/wasm32-unknown-unknown/release/*.wasm
+'''
+
+[tasks.docs-clean]
+description = "Clean documentation folder"
+script = '''
+echo "🧹 Cleaning documentation folder"
+rm -rf ${DOCS_FOLDER}/*
+'''
+
+[tasks.check-prerequisites]
+description = "Check prerequisites"
+script = '''
+echo "🔍 Checking prerequisites"
+
+echo "❔ Checking \`npx\` installed..."
+if ! which npx >/dev/null;
+then
+   echo "\n❌ npx could not be found"
+   echo "  Consider installing npx.\n"
+   echo "＞ \`npm install -g npx\`\n\n"
+   exit 1
+fi
+echo "✅ \`npx\` installed"
+
+echo "❔ Checking \`awk\` installed..."
+if ! which awk >/dev/null;
+then
+   echo "\n❌ awk could not be found"
+   echo "  Consider installing awk."
+   exit 1
+fi
+echo "✅ \`perl\` installed"
+
+echo "❔ Checking \`perl\` installed..."
+if ! which perl >/dev/null;
+then
+   echo "\n❌ perl could not be found"
+   echo "  Consider installing perl."
+   exit 1
+fi
+echo "✅ \`perl\` installed"
+
+echo "❔ Checking \`jq\` installation..."
+if [[ $(jq --version) != jq-1\.7* ]]
+then
+  echo "\n❌ Require jq version 1.7"
+  exit 1
+fi
+echo "✅ \`jq\` installed"
+'''
+
+[tasks.docs-generate]
+dependencies = ["check-prerequisites", "docs-clean", "schema"]
+description = "Generate documentation"
+script = '''
+echo "🧹 Cleaning old documentation..."
+rm -rf $SCHEMA_FOLDER
+rm -rf $DOCS_FOLDER
+
+echo "📚 Generating documentation in ${DOCS_FOLDER} folder..."
+
+mkdir -p $SCHEMA_FOLDER
+find contracts/*/schema -type f -maxdepth 1 -name '*.json' \
+    -exec sh -c 'cp "$@" "$0"' $SCHEMA_FOLDER/ {} +
+
+mkdir -p $DOCS_FOLDER
+
+for SCHEMA in $(ls $SCHEMA_FOLDER); do
+    from="$SCHEMA"
+    to="${SCHEMA%.json}.md"
+    echo "✍️ Rendering ${SCHEMA_FOLDER}/$from to $to"
+
+    awk "{sub(\"#/definitions\",\"./${from}/#/definitions\")} {print}" ${SCHEMA_FOLDER}/$from > ${SCHEMA_FOLDER}/$from.tmp
+    mv ${SCHEMA_FOLDER}/${from}.tmp ${SCHEMA_FOLDER}/${from}
+
+    npx --yes @fadroma/schema@1.1.0 ${SCHEMA_FOLDER}/${from} > "docs/${to}.tmp"
+
+    perl << 'EOF' - "docs/${to}.tmp" > "docs/${to}"
+    use strict;
+    use warnings;
+    use autodie;
+
+    my $file = shift @ARGV;
+    local $/ = undef;
+
+    open my $fh, '<', $file or die "☠️ Could not open file: $!";
+    my $content = <$fh>;
+    close $fh;
+
+    my $in_code_block = 0;
+    my $in_inline_code = 0;
+    my $escaped_content = '';
+    my @chars = split //, $content;
+
+    for (my $i = 0; $i < @chars; $i++) {
+        my $char = $chars[$i];
+        my $emitted = '';
+
+        if ($char eq '`') {
+            my $next_char = $chars[$i + 1] // '';
+            my $next_next_char = $chars[$i + 2] // '';
+            if ($next_char eq '`' && $next_next_char eq '`') {
+                $in_code_block = !$in_code_block;
+                $i += 2;
+                $emitted = '```';
+            } elsif (!$in_code_block) {
+                $in_inline_code = !$in_inline_code;
+                $emitted = '`';
+            } else {
+                $emitted = $char;
+            }
+        } elsif ($char eq '\n') {
+          $in_inline_code = 0;
+          $emitted = $char;
+        } elsif (!$in_code_block && !$in_inline_code && ($char eq '{' || $char eq '}')) {
+            $emitted = "\\$char";
+        } else {
+            $emitted = $char;
+        }
+
+        $escaped_content .= $emitted;
+    }
+
+    print $escaped_content;
+EOF
+
+    rm "docs/${to}.tmp"
+
+done
+
+rm -rf $SCHEMA_FOLDER
+
+echo "📐 Formatting documentation..."
+npx --yes prettier@3.1.1 docs/*.md --write
+
+echo "📖 Documentation has been successfully generated and available at $(pwd)/$DOCS_FOLDER/README.md"
+'''
+
+[tasks.release-wasm]
+description = "Build optimized wasm using CosmWasm optimizer and provide checksums"
+script = '''
+echo "📦 Generating release binaries and checksums into ${DIR_WASM}"
+docker run --rm -v "$(pwd)":/code \
+  --mount type=volume,source="$(basename "$(pwd)")_cache",target=/target \
+  --mount type=volume,source=registry_cache,target=/usr/local/cargo/registry \
+  cosmwasm/optimizer:0.15.1
+'''
+
+[tasks.scaffold-smart-contract]
+args = ["apply", "-s", "templates/axone-smart-contract", "-d", "contracts"]
+command = "ffizer"
+dependencies = ["install-ffizer"]
+
+[tasks.chain-clean]
+condition = { fail_message = "🚫 The chain is running" }
+condition_script = ["! docker ps -a | grep ${CHAIN} > /dev/null"]
+description = "Clean the chain data (⚠️ definitively)"
+script = '''
+echo "️🧹Cleaning chain ${CHAIN} under ${CHAIN_HOME}"
+rm -rf ${CHAIN_HOME}
+'''
+
+[tasks.chain-init-folder]
+description = "Initialize deploy folder to make sure scripts have the right permission (needed for linux)"
+script = '''
+echo "️✨ Create deploy folder structure"
+mkdir -p ${DIR_DEPLOY}/${CHAIN}/config/keyring-test
+mkdir -p ${DIR_DEPLOY}/${CHAIN}/config/gentx
+mkdir -p ${DIR_DEPLOY}/${CHAIN}/keyring-test
+mkdir -p ${DIR_DEPLOY}/${CHAIN}/data
+'''
+
+[tasks.chain-add-keys]
+condition = { fail_message = "🚫 The chain is already initialized." }
+condition_script = ["[ ! -f ${CHAIN_HOME}/config/genesis.json ]"]
+dependencies = ["chain-init-folder"]
+description = "Add a set of predefined keys (recovered from the seed phrases) to the chain."
+script = '''
+keys=(
+  "validator:${MNEMONIC_VALIDATOR}"
+  "alice:${MNEMONIC_ALICE}"
+  "bob:${MNEMONIC_BOB}"
+  "charlie:${MNEMONIC_CHARLIE}"
+ )
+for entry in "${keys[@]}" ; do
+    name="${entry%%:*}"
+    key="${entry##*:}"
+    echo "🗝️ Adding key ${name} for chain ${CHAIN}"
+    echo "${key}" \
+    | docker run --rm -i \
+        -v `pwd`:/app \
+        -w /app \
+        ${DOCKER_IMAGE_AXONED} \
+          keys add ${name} \
+            --recover \
+            --keyring-backend ${KEYRING_BACKEND} \
+            --home ${CHAIN_HOME}
+done
+'''
+
+[tasks.chain-initialize]
+condition = { fail_message = "🚫 The chain is already initialized." }
+condition_script = ["[ ! -f ${CHAIN_HOME}/config/genesis.json ]"]
+dependencies = ["chain-add-keys"]
+description = "Initialize the chain with a validator's key and a set of predefined keys. ⚠️ The home directory is cleaned before."
+script = '''
+echo "🛠️ Initializing chain ${CHAIN} under ${CHAIN_HOME}"
+docker run --rm \
+  -v `pwd`:/app \
+  -w /app \
+  ${DOCKER_IMAGE_AXONED} \
+    init ${CHAIN_MONIKER} \
+      --chain-id=${CHAIN} \
+      --home ${CHAIN_HOME}
+
+balances=(
+  "validator:${BALANCE_VALIDATOR}"
+  "alice:${BALANCE_ALICE}"
+  "bob:${BALANCE_BOB}"
+  "charlie:${BALANCE_CHARLIE}"
+ )
+for entry in "${balances[@]}" ; do
+    name="${entry%%:*}"
+    balance="${entry##*:}"
+    docker run --rm -i \
+      -v `pwd`:/app \
+      -w /app \
+      ${DOCKER_IMAGE_AXONED} \
+         genesis add-genesis-account ${name} "${balance}"  \
+          --keyring-backend ${KEYRING_BACKEND} \
+          --home ${CHAIN_HOME}
+done
+
+NODE_ID=$(
+  docker run --rm \
+    -v `pwd`:/app \
+    -w /app \
+    ${DOCKER_IMAGE_AXONED} \
+      comet show-node-id \
+        --home ${CHAIN_HOME}
+)
+docker run --rm \
+  -v `pwd`:/app \
+  -w /app \
+  ${DOCKER_IMAGE_AXONED} \
+    genesis gentx validator 1000000uaxone \
+      --node-id ${NODE_ID} \
+      --chain-id=${CHAIN} \
+      --keyring-backend ${KEYRING_BACKEND} \
+      --home ${CHAIN_HOME}
+
+docker run --rm \
+  -v `pwd`:/app \
+  -w /app \
+  ${DOCKER_IMAGE_AXONED} \
+	  genesis collect-gentxs \
+	    --home ${CHAIN_HOME}
+
+sed -i ${SED_FLAG} 's/"stake"/"uaxone"/g' ${CHAIN_HOME}/config/genesis.json
+
+'''
+
+[tasks.chain-start]
+condition = { fail_message = "🚫 The chain is already running" }
+condition_script = ["! docker ps -a | grep ${CHAIN} > /dev/null"]
+description = "Run the full node axoned application using the chain's home directory under a Docker container."
+script = '''
+echo "🚀 Starting chain ${CHAIN} under ${CHAIN_HOME}"
+
+if [ ! -f ${CHAIN_HOME}/config/genesis.json ]; then
+  echo "❌ The chain seems to be uninitialised. Try: cargo make chain-initialize"
+  exit 1
+fi
+
+docker run -d \
+  --network host \
+  -v `pwd`:/app \
+  -w /app \
+  --name ${CHAIN} \
+  ${DOCKER_IMAGE_AXONED} \
+    start \
+      --moniker ${CHAIN} \
+      --home ${CHAIN_HOME}
+'''
+
+[tasks.chain-stop]
+condition = { fail_message = "🚫 The chain is not running" }
+condition_script = ["docker ps -a | grep ${CHAIN} > /dev/null"]
+description = "Stop the chain's container."
+script = '''
+echo "🛑 Stopping chain ${CHAIN} under ${CHAIN_HOME}"
+docker stop ${CHAIN}
+docker rm ${CHAIN}
+'''
+
+[tasks.chain-logs]
+condition = { fail_message = "🚫 The chain is not running" }
+condition_script = ["docker ps -a | grep ${CHAIN} > /dev/null"]
+description = "Show the chain's container logs."
+script = '''
+echo "📜 Logs for chain ${CHAIN} under ${CHAIN_HOME}:"
+docker logs -f ${CHAIN}
+'''
+
+[tasks.chain]
+description = "Run the axoned CLI using the chain's home directory under a Docker container."
+script = '''
+echo "⌨️ Executing ${DOCKER_IMAGE_AXONED} ${@}..."
+
+docker run \
+  --network host \
+  -v `pwd`:/app \
+  -w /app \
+  -ti \
+  --rm \
+  ${DOCKER_IMAGE_AXONED} \
+    ${@}
+'''
+
+[tasks.chain-deploy-contract]
+dependencies = ["chain-start"]
+description = "Deploy a specific contract to the chain. The contract must be compiled and the wasm file must be present in the artifacts directory (under target/wasm32-unknown-unknown/...)."
+script = '''
+if [ -z "$1" ]
+then
+  echo "❌ Please provide the contract name (without extension) as the first argument."
+  exit 1
+fi
+contract=$1
+
+echo "📦 Deploying contract ${contract}.wasm (under ${DIR_WASM}) to chain ${CHAIN}"
+docker run --rm \
+  --network host \
+  -v `pwd`:/app:ro \
+  -w /app \
+  ${DOCKER_IMAGE_AXONED} \
+    tx wasm store ${DIR_WASM}/${contract}.wasm \
+      --from validator \
+      --keyring-backend test \
+      --home ${CHAIN_HOME} \
+      --gas-prices 0.025uaxone \
+      --gas auto \
+      --gas-adjustment 1.5 \
+      --chain-id ${CHAIN} \
+      --yes | docker run --rm -i \
+        --network host \
+        -v `pwd`:/app:ro \
+        -w /app \
+        ${DOCKER_IMAGE_AXONED} query wait-tx
+'''
+
+[tasks.chain-deploy-contracts]
+description = "Deploy all the available contracts to the chain (under target/wasm32-unknown-unknown/...)."
+script = '''
+find "${DIR_WASM}" -type f -name "*.wasm" -maxdepth 1 | while read file; do
+  wasm=$(basename $file)
+  contract=${wasm%.*}
+  cargo make chain-deploy-contract $contract
+done
+'''
+
+[tasks.chain-list-contracts]
+description = "List all the contracts deployed to the chain."
+script = '''
+echo "🔍 Listing contracts on chain ${CHAIN}"
+docker run --rm \
+  --network host \
+  -v `pwd`:/app:ro \
+  -w /app \
+  ${DOCKER_IMAGE_AXONED} \
+    query wasm list-code \
+      --limit 1000 \
+      --home ${CHAIN_HOME}
+'''
+
+[tasks.chain-inspect-contract]
+description = "Inspect a specific contract deployed to the chain."
+script = '''
+if [ -z "$1" ]
+then
+  echo "❌ Please provide the contract code ID as the first argument."
+  exit 1
+fi
+code_id=$1
+docker run --rm \
+  --network host \
+  -v `pwd`:/app:ro \
+  -w /app \
+  ${DOCKER_IMAGE_AXONED} \
+    query wasm code-info $code_id \
+      --home ${CHAIN_HOME}
+'''
+
+[tasks.chain-instantiate-contract]
+dependencies = ["chain-start"]
+description = "Instantiate a specific contract to the chain. The contract must be already deployed."
+script = '''
+if [ -z "$1" ]
+then
+  echo "❌ Please provide the contract code id as the first argument."
+  exit 1
+fi
+code=$1
+
+if [ -z "$2" ]
+then
+  echo "❌ Please provide the contract label as the second argument."
+  exit 1
+fi
+label=$2
+
+if [ -z "$3" ]
+then
+  echo "❌ Please provide the contract instantiation json input as the third argument."
+  exit 1
+fi
+json=$3
+
+echo "📦 Instantiate contract ${code} to chain ${CHAIN}"
+docker run --rm \
+  --network host \
+  -v `pwd`:/app:ro \
+  -w /app \
+  ${DOCKER_IMAGE_AXONED} \
+    tx wasm instantiate ${code} "${json}" \
+      --from validator \
+      --keyring-backend test \
+      --home ${CHAIN_HOME} \
+      --gas-prices 0.025uaxone \
+      --gas auto \
+      --gas-adjustment 1.5 \
+      --chain-id ${CHAIN} \
+      --yes \
+      --label $label \
+      --no-admin | docker run --rm -i \
+        --network host \
+        -v `pwd`:/app:ro \
+        -w /app \
+        ${DOCKER_IMAGE_AXONED} query wait-tx
+'''
+
+[tasks.chain-query-contract]
+dependencies = ["chain-start"]
+description = "Query a specific contract to the chain. The contract must be already deployed and instantiated."
+script = '''
+if [ -z "$1" ]
+then
+  echo "❌ Please provide the contract address as the first argument."
+  exit 1
+fi
+addr=$1
+
+if [ -z "$2" ]
+then
+  echo "❌ Please provide the contract query as the second argument."
+  exit 1
+fi
+query=$2
+
+echo "📦 Query contract ${addr} to chain ${CHAIN}"
+docker run --rm \
+  --network host \
+  -v `pwd`:/app:ro \
+  -w /app \
+  ${DOCKER_IMAGE_AXONED} \
+    query wasm contract-state smart ${addr} "${query}" \
+      --output json \
+      | jq -r '.'
+'''
+
+[tasks.chain-execute-contract]
+dependencies = ["chain-start"]
+description = "Execute a command on a specific contract to the chain. The contract must be already deployed and instantiated."
+script = '''
+if [ -z "$1" ]
+then
+  echo "❌ Please provide the contract address as the first argument."
+  exit 1
+fi
+addr=$1
+
+if [ -z "$2" ]
+then
+  echo "❌ Please provide the contract execute msg as the second argument."
+  exit 1
+fi
+msgs=$2
+
+echo "📦 Execute on contract ${addr} to chain ${CHAIN}"
+docker run --rm \
+  --network host \
+  -v `pwd`:/app:ro \
+  -w /app \
+  ${DOCKER_IMAGE_AXONED} \
+    tx wasm execute ${addr} "${msgs}" \
+      --from validator \
+      --keyring-backend test \
+      --home ${CHAIN_HOME} \
+      --gas-prices 0.025uaxone \
+      --gas auto \
+      --gas-adjustment 1.5 \
+      --chain-id ${CHAIN} \
+      --yes | docker run --rm -i \
+        --network host \
+        -v `pwd`:/app:ro \
+        -w /app \
+        ${DOCKER_IMAGE_AXONED} query wait-tx \
+          --output json \
+          | jq -r '.'
+'''
+
+[tasks.install-llvm-tools-preview]
+install_crate = { rustup_component_name = "llvm-tools-preview" }
+
+[tasks.install-clippy]
+install_crate = { rustup_component_name = "clippy" }
+
+[tasks.intall-cranky]
+dependencies = ["install-clippy"]
+install_crate = { crate_name = "cranky", min_version = "0.3.0" }
+
+[tasks.install-rustfmt]
+install_crate = { rustup_component_name = "rustfmt" }
+
+[tasks.install-taplo-cli]
+install_crate = { crate_name = "taplo-cli", binary = "taplo", test_arg = "--help", min_version = "0.9.0" }
+
+[tasks.install-cargo-toml-lint]
+install_crate = { crate_name = "cargo-toml-lint", min_version = "0.1.1" }
+
+[tasks.install-llvm-cov]
+install_crate = { crate_name = "cargo-llvm-cov", min_version = "0.6.9" }
+install_crate_args = ["--force"]
+
+[tasks.install-cosmwasm-check]
+install_crate = { crate_name = "cosmwasm-check", min_version = "2.1.1" }
+
+[tasks.install-ffizer]
+install_script = '''
+if ! [ -x "$(command -v ffizer)" ]; then
+  echo '❌ ffizer - https://ffizer.github.io/ not found. Please install it first.' >&2
+  exit 1
+fi
+'''
+
+[tasks.install-cargo-hack]
+install_crate = { crate_name = "cargo-hack", min_version = "0.6.14" }
+
+[config]
+default_to_workspace = false
+min_version = "0.36.3"
+
+[env]
+CARGO_MAKE_CRATE_INSTALLATION_LOCKED = true
+
+DOCS_FOLDER = "docs"
+SCHEMA_FOLDER = "schema"
+
+BALANCE_ALICE = "100000000000uaxone"
+BALANCE_BOB = "100000000000uaxone"
+BALANCE_CHARLIE = "100000000000uaxone"
+BALANCE_VALIDATOR = "1000000000uaxone"
+CHAIN = "axone-localnet"
+CHAIN_HOME = "${DIR_DEPLOY}/${CHAIN}"
+CHAIN_MONIKER = "local-node"
+DIR_DEPLOY = "${DIR_TARGET}/deploy"
+DIR_TARGET = "./target"
+DIR_WASM = "${DIR_TARGET}/wasm32-unknown-unknown/release"
+DOCKER_IMAGE_AXONED = "axoneprotocol/axoned:8.0.0"
+KEYRING_BACKEND = "test"
+MNEMONIC_ALICE = "code ceiling reduce repeat unfold intact cloud marriage nut remove illegal eternal pool frame mask rate buzz vintage pulp suggest loan faint snake spoon"
+MNEMONIC_BOB = "add pig champion lounge initial tunnel oak panic drama float foot elegant coast manage diesel essence glory bicycle sniff upon horse crash damage bounce"
+MNEMONIC_CHARLIE = "couple proud learn plunge neglect dice dry tail keen price tuition inherit ordinary portion abandon body kitten system word monitor lava quiz soup lift"
+MNEMONIC_VALIDATOR = "island position immense mom cross enemy grab little deputy tray hungry detect state helmet tomorrow trap expect admit inhale present vault reveal scene atom"
+SED_FLAG = { script = [
+  '''if [ ${SHELL_NAME} = 'Darwin' ]; then echo "\'\'"; else echo; fi''',
+] }
+SHELL_NAME = { script = ["uname -s"] }

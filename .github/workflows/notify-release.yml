@@ -1,0 +1,78 @@
+name: notify-release
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  notify-discord:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Notify Discord
+        uses: fjogeleit/http-request-action@v1
+        with:
+          url: ${{ secrets.DISCORD_WEBHOOK }}
+          method: "POST"
+          customHeaders: '{"Content-Type": "application/json"}'
+          data: |-
+            {
+              "avatar_url": "https://avatars.githubusercontent.com/u/98603954?v=4",
+              "username": "Bot Anik",
+              "content": "🚨 A new version of @${{ github.repository }} ${{ github.event.release.tag_name }} has been released! 🎉\n\n👉 Changelog: https://github.com/${{ github.repository }}/releases/tag/${{ github.event.release.tag_name }}\n👉 Official repo: https://github.com/${{ github.repository }}"
+            }
+
+  notify-github-discussion:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Post announcement to GitHub Discussion
+        uses: abirismyname/create-discussion@v1
+        env:
+          GH_TOKEN: ${{ secrets.OPS_TOKEN }}
+        with:
+          title: "🎉 ${{ github.repository }} ${{ github.event.release.tag_name }} has been released"
+          body: |
+            🎉 [${{ github.repository }}](https://github.com/${{ github.repository }}) ${{ github.event.release.tag_name }} has been released!
+
+            👉 Changelog: <https://github.com/${{ github.repository }}/releases/tag/${{ github.event.release.tag_name }}>
+            👉 Official repo: <https://github.com/${{ github.repository }}>
+          repository-id: "R_kgDOLsWt6A"
+          category-id: "DIC_kwDOLsWt6M4CemGO"
+
+  update-docs:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Update docs repository
+        uses: fjogeleit/http-request-action@v1
+        with:
+          url: "https://api.github.com/repos/axone-protocol/docs/actions/workflows/39152549/dispatches"
+          method: "POST"
+          customHeaders: '{"Accept": "application/vnd.github+json", "Authorization": "Bearer ${{ secrets.OPS_TOKEN }}"}'
+          data: |-
+            {
+              "ref": "main",
+              "inputs": {
+                "version": "${{ github.event.release.tag_name }}",
+                "repository": "${{github.repository}}",
+                "section": "contracts",
+                "docs_directory": "docs/*",
+                "draft": "false"
+              }
+            }
+
+  update-schema:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Update schema repository
+        uses: fjogeleit/http-request-action@v1
+        with:
+          url: "https://api.github.com/repos/axone-protocol/axone-contract-schema/actions/workflows/68383422/dispatches"
+          method: "POST"
+          customHeaders: '{"Accept": "application/vnd.github+json", "Authorization": "Bearer ${{ secrets.OPS_TOKEN }}"}'
+          data: |-
+            {
+              "ref": "main",
+              "inputs": {
+                "ref": "${{ github.event.release.tag_name }}",
+                "draft": "false"
+              }
+            }

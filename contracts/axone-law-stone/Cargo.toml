@@ -1,0 +1,28 @@
+[package]
+authors = ["AXONE"]
+edition = "2021"
+name = "axone-law-stone"
+rust-version = "1.75"
+version = "6.0.0"
+
+exclude = [
+  # Those files are rust-optimizer artifacts. You might want to commit them for convenience but they should not be part of the source code publication.
+  "contract.wasm",
+  "hash.txt",
+]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+
+[dev-dependencies]
+cw-multi-test.workspace = true
+testing.workspace = true
+url = "2.5.2"
+
+[features]
+# use library feature to disable all instantiate/execute/query exports
+library = []

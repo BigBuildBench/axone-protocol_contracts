@@ -1,0 +1,7 @@
+[package]
+authors = ["AXONE"]
+edition = "2021"
+name = "axone-wasm"
+version = "6.0.0"
+
+[dependencies]
